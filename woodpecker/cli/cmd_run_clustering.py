@@ -40,9 +40,9 @@ def add_parser(subparsers) -> None:
         help="Run wire-cell clustering on imaging output, then package for bee display",
     )
     p.add_argument(
-        "--input", default="woodpecker_data",
+        "--input", default=None,
         help="Directory containing clusters-apa-anodeN-ms-active/masked.tar.gz "
-             "(default: ./woodpecker_data/)",
+             "(default: same as --datadir)",
     )
     p.add_argument(
         "--datadir", default="woodpecker_data",
@@ -169,12 +169,13 @@ def run(args: argparse.Namespace) -> None:
     print("wire-cell clustering")
     print("=" * 60)
     datadir     = args.datadir
-    output_dir  = datadir   # cluster output and bee zips all go to woodpecker_data/
+    input_dir   = args.input if args.input is not None else datadir
+    output_dir  = datadir   # cluster output and bee zips all go to datadir
     unzip_script  = os.path.abspath(os.path.join(_TOOLS_DIR, "unzip.pl"))
     upload_script = os.path.abspath(os.path.join(_TOOLS_DIR, "zip-upload.sh"))
 
     print(f"  datadir       : {datadir}  (source of anode indices and output destination)")
-    print(f"  input dir     : {args.input}  (where imaging cluster files are read from)")
+    print(f"  input dir     : {input_dir}  (where imaging cluster files are read from)")
     print(f"  output_dir    : {output_dir}  (where mabc-*.zip will be written)")
     print(f"  anode_indices : {anode_list}")
     print(f"  jsonnet       : {jsonnet}")
@@ -188,7 +189,7 @@ def run(args: argparse.Namespace) -> None:
         "wire-cell",
         "-l", "stdout",
         "-L", args.log_level,
-        "--tla-str",  f"input={args.input}",
+        "--tla-str",  f"input={input_dir}",
         "--tla-str",  f"output_dir={output_dir}",
         "--tla-code", f"anode_indices={anode_list}",
         "-c", jsonnet,

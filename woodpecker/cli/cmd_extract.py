@@ -31,8 +31,8 @@ def add_parser(subparsers) -> None:
         "--out", default=None,
         help="Save results as JSON (default: ./woodpecker_data/tracks-<input-stem>.json)",
     )
-    p.add_argument("--outdir", default="woodpecker_data",
-                   help="Output directory (default: ./woodpecker_data/)")
+    p.add_argument("--outdir", default=None,
+                   help="Output directory (default: same directory as the input file)")
     p.add_argument(
         "--min-points", type=int, default=2,
         help="Skip clusters with fewer than this many points (default: 2)",
@@ -62,9 +62,10 @@ def run(args: argparse.Namespace) -> None:
 
     results = ctx.outputs["track_results"]
 
-    # Save JSON — use explicit --out, else default to ./woodpecker_data/tracks-<stem>.json
+    # Save JSON — use explicit --out, else default to <input_dir>/tracks-<stem>.json
     stem = os.path.splitext(os.path.basename(args.cluster_file))[0]
-    out_path = args.out or os.path.join(args.outdir, f"tracks-{stem}.json")
+    outdir = args.outdir or os.path.dirname(args.cluster_file) or "."
+    out_path = args.out or os.path.join(outdir, f"tracks-{stem}.json")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     _save_json(results, out_path)
     print(f"Results saved to {out_path}")

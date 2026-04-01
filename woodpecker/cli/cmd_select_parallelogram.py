@@ -1,4 +1,4 @@
-"""CLI subcommand: woodpecker select-compare
+"""CLI subcommand: woodpecker select-refine
 
 Interactive GUI to select parallelogram signal regions separately for raw data
 and simulation frames.
@@ -39,7 +39,7 @@ JSON output schema:
 
 Usage
 -----
-  woodpecker select-compare \\
+  woodpecker select-refine \\
       --data woodpecker_data/protodune-sp-frames-raw-anode0.tar.bz2 \\
       --sim  woodpecker_data/protodune-sp-frames-sim-anode0.tar.bz2 \\
       --out  woodpecker_data/compare-selection-anode0.json
@@ -64,7 +64,8 @@ PLANE_LABELS = ["U", "V", "W"]
 
 def _empty_plane_params() -> dict:
     return {"ch_min": None, "ch_max": None,
-            "tick_start": None, "tick_end": None, "nticks": None}
+            "tick_start": None, "tick_end": None, "nticks": None,
+            "track_points": None}   # None or {"p1":[ch,tick],"p2":[ch,tick]}
 
 
 def _selection_to_dict(data_params: dict, sim_params: dict,
@@ -140,7 +141,7 @@ def _run_compare_ui(
         gridspec_kw={"hspace": 0.38, "wspace": 0.25},
     )
     fig.suptitle(
-        "select-compare  ·  Data (top) and Sim (bottom)\n"
+        "select-refine  ·  Data (top) and Sim (bottom)\n"
         "Drag line, press ENTER to confirm each step  ·  'r' = undo last step",
         fontsize=11, y=0.999,
     )
@@ -191,6 +192,14 @@ def _run_compare_ui(
         "sim":  {pl: False for pl in PLANE_LABELS},
     }
 
+    # ── track-point mode (per ds, per plane) ─────────────────────────────────
+    # When enabled, the next two clicks on that subplot set p1 and p2.
+    # track_mode[ds][pl]: False | "wait_p1" | "wait_p2"
+    track_mode: Dict[str, Dict[str, str]] = {
+        "data": {pl: False for pl in PLANE_LABELS},
+        "sim":  {pl: False for pl in PLANE_LABELS},
+    }
+
     # ── UI widgets ────────────────────────────────────────────────────────────
     instr_ax = fig.add_axes([0.01, 0.955, 0.98, 0.038])
     instr_ax.axis("off")
@@ -220,44 +229,71 @@ def _run_compare_ui(
     # Layout: 2 rows × 3 cols. Each cell approx x=[col*0.33, col*0.33+0.28],
     # y=[row*0.50, row*0.50+0.45]. Button strip at bottom of each cell.
     _rev_btns: Dict[Tuple[str, str], Button] = {}
+    _trk_btns: Dict[Tuple[str, str], Button] = {}
 
-    def _make_rev_buttons():
-        """Create reverse-slope toggle buttons positioned below each subplot."""
-        # Approximate subplot bounding boxes in figure coords
-        # subplots: 2 rows, 3 cols; hspace=0.38, wspace=0.25
-        # We place buttons as small axes anchored just below each subplot.
+    def _make_plane_buttons():
+        """Create per-subplot buttons: reverse-slope and track-points toggle."""
         col_lefts  = [0.075, 0.385, 0.695]
-        col_widths = [0.22,  0.22,  0.22 ]
-        row_bottoms = [0.51, 0.05]   # data row top, sim row top (approx)
+        col_widths = [0.105, 0.105, 0.105]  # half-width each, two buttons side by side
+        col_lefts2 = [c + 0.113 for c in col_lefts]  # right button x
+        row_bottoms = [0.51, 0.05]
         btn_h = 0.022
 
         for row_i, ds in enumerate(("data", "sim")):
             for col, pl in enumerate(PLANE_LABELS):
-                ax_pos = fig.add_axes(
+                # Reverse-slope button (left half)
+                ax_rev = fig.add_axes(
                     [col_lefts[col], row_bottoms[row_i] - btn_h - 0.005,
                      col_widths[col], btn_h]
                 )
-                btn = Button(ax_pos, f"Reverse slope [{pl}]",
-                             color="0.88", hovercolor="lightsalmon")
-                btn._rev_ds = ds
-                btn._rev_pl = pl
-                _rev_btns[(ds, pl)] = btn
+                btn_rev = Button(ax_rev, f"Rev [{pl}]",
+                                 color="0.88", hovercolor="lightsalmon")
+                _rev_btns[(ds, pl)] = btn_rev
 
-                def _make_cb(ds_=ds, pl_=pl):
+                def _make_rev_cb(ds_=ds, pl_=pl):
                     def _cb(_event):
                         slope_reversed[ds_][pl_] = not slope_reversed[ds_][pl_]
                         rev = slope_reversed[ds_][pl_]
                         _rev_btns[(ds_, pl_)].label.set_text(
-                            f"{'[REV] ' if rev else ''}Reverse slope [{pl_}]"
+                            f"{'[REV] ' if rev else ''}Rev [{pl_}]"
                         )
                         _rev_btns[(ds_, pl_)].color = "lightsalmon" if rev else "0.88"
                         _draw_parallelogram(ds_, pl_)
                         fig.canvas.draw_idle()
                     return _cb
 
-                btn.on_clicked(_make_cb())
+                btn_rev.on_clicked(_make_rev_cb())
 
-    _make_rev_buttons()
+                # Track-points button (right half)
+                ax_trk = fig.add_axes(
+                    [col_lefts2[col], row_bottoms[row_i] - btn_h - 0.005,
+                     col_widths[col], btn_h]
+                )
+                btn_trk = Button(ax_trk, f"Track [{pl}]",
+                                 color="0.88", hovercolor="lightcyan")
+                _trk_btns[(ds, pl)] = btn_trk
+
+                def _make_trk_cb(ds_=ds, pl_=pl):
+                    def _cb(_event):
+                        cur = track_mode[ds_][pl_]
+                        if cur:
+                            # toggle off — clear pending state
+                            track_mode[ds_][pl_] = False
+                            btn_lbl = f"Track [{pl_}]"
+                            btn_color = "0.88"
+                        else:
+                            # toggle on — start waiting for p1
+                            track_mode[ds_][pl_] = "wait_p1"
+                            btn_lbl = f"[CLK P1] Track [{pl_}]"
+                            btn_color = "lightcyan"
+                        _trk_btns[(ds_, pl_)].label.set_text(btn_lbl)
+                        _trk_btns[(ds_, pl_)].color = btn_color
+                        fig.canvas.draw_idle()
+                    return _cb
+
+                btn_trk.on_clicked(_make_trk_cb())
+
+    _make_plane_buttons()
 
     # ── shared horizontal lines ───────────────────────────────────────────────
     # For each (ds, tick_key) we keep one Line2D per axes column.
@@ -290,6 +326,27 @@ def _run_compare_ui(
         for ln in _drag_lines:
             ln.set_ydata([y, y])
             ln.set_xdata(ln.axes.get_xlim())
+
+    # ── track-point drawing helpers ───────────────────────────────────────────
+    def _draw_track_points(ds: str, pl: str):
+        """Draw/update the two track points and connecting line on the subplot."""
+        col = PLANE_LABELS.index(pl)
+        ax = _axes_row(ds)[col]
+        # remove old track artists
+        for ln in list(ax.lines):
+            if getattr(ln, "_trk_tag", None) == f"{ds}_{pl}":
+                ln.remove()
+        for sc in list(ax.collections):
+            if getattr(sc, "_trk_tag", None) == f"{ds}_{pl}":
+                sc.remove()
+        tp = params[ds][pl].get("track_points")
+        if not tp or "p1" not in tp or "p2" not in tp:
+            return
+        color = PLANE_COLORS[pl]
+        p1, p2 = tp["p1"], tp["p2"]
+        ln, = ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
+                      color=color, lw=2, ls="-.", zorder=7, marker="o", ms=6)
+        ln._trk_tag = f"{ds}_{pl}"
 
     # ── parallelogram overlay per plane ──────────────────────────────────────
     def _draw_parallelogram(ds: str, plane_lbl: str):
@@ -350,7 +407,7 @@ def _run_compare_ui(
         color = PLANE_COLORS[plane_lbl]
         sp = SpanSelector(
             ax, _on_ch_drag, direction="horizontal",
-            useblit=True,
+            useblit=False,
             props=dict(alpha=0.3, facecolor=color),
             interactive=True, drag_from_anywhere=False,
         )
@@ -437,6 +494,38 @@ def _run_compare_ui(
     def _on_press(event):
         if event.inaxes is None:
             return
+
+        # ── track-point capture (independent of step flow) ────────────────
+        for ds_ in ("data", "sim"):
+            for col, pl_ in enumerate(PLANE_LABELS):
+                if track_mode[ds_][pl_] and event.inaxes == _axes_row(ds_)[col]:
+                    ch   = event.xdata
+                    tick = event.ydata
+                    if ch is None or tick is None:
+                        return
+                    tp = params[ds_][pl_].get("track_points") or {}
+                    if track_mode[ds_][pl_] == "wait_p1":
+                        tp["p1"] = [int(round(ch)), int(round(tick))]
+                        params[ds_][pl_]["track_points"] = tp
+                        track_mode[ds_][pl_] = "wait_p2"
+                        _trk_btns[(ds_, pl_)].label.set_text(
+                            f"[CLK P2] Track [{pl_}]")
+                        print(f"  Track {DS_LABELS[ds_]} {pl_} P1 = "
+                              f"ch={tp['p1'][0]} tick={tp['p1'][1]}")
+                    elif track_mode[ds_][pl_] == "wait_p2":
+                        tp["p2"] = [int(round(ch)), int(round(tick))]
+                        params[ds_][pl_]["track_points"] = tp
+                        track_mode[ds_][pl_] = False
+                        _trk_btns[(ds_, pl_)].label.set_text(
+                            f"[SET] Track [{pl_}]")
+                        _trk_btns[(ds_, pl_)].color = "palegreen"
+                        print(f"  Track {DS_LABELS[ds_]} {pl_} P2 = "
+                              f"ch={tp['p2'][0]} tick={tp['p2'][1]}")
+                    _draw_track_points(ds_, pl_)
+                    _update_summary()
+                    fig.canvas.draw_idle()
+                    return  # consumed
+
         step = _cur_step[0]
         if step >= NSTEPS:
             return
@@ -601,6 +690,7 @@ def _run_compare_ui(
             params[ds][what]["ch_min"] = None
             params[ds][what]["ch_max"] = None
             _draw_parallelogram(ds, what)
+            _draw_track_points(ds, what)
             fig.canvas.draw_idle()
             print(f"  Undo: cleared {DS_LABELS[ds]} plane {what} channel range")
 
@@ -697,7 +787,7 @@ def _run_compare_ui(
     _highlight(ds0, what0)
     _update_instruction(0)
 
-    print("\nselect-compare UI ready.  12 steps total (6 per dataset).")
+    print("\nselect-refine UI ready.  12 steps total (6 per dataset).")
     print("  Steps 1–3 : drag horizontal line in DATA row, press ENTER")
     print("              t1=solid (start tick @ ch_min)")
     print("              t2=dashed (start tick @ ch_max, sets per-plane slope)")
@@ -716,7 +806,7 @@ def _run_compare_ui(
 
 def add_parser(subparsers) -> None:
     p = subparsers.add_parser(
-        "select-compare",
+        "select-refine",
         help="Interactive GUI to select parallelogram signal regions for data/sim comparison",
     )
     p.add_argument("--data", required=True, metavar="DATA_TAR",

@@ -72,6 +72,11 @@ def add_parser(subparsers) -> None:
         help="wire-cell -L log level (default: info)",
     )
     p.add_argument(
+        "--anode-indices", default=None,
+        help="Override anode indices as JSON list e.g. '[1,2]' "
+             "(default: auto-detect from files in --datadir)",
+    )
+    p.add_argument(
         "--dry-run", action="store_true",
         help="Print the wire-cell command but do not execute it",
     )
@@ -170,6 +175,16 @@ def run(args: argparse.Namespace) -> None:
         prefix = prefixes.pop()
 
     anode_ids = sorted(n for _, n, _ in matches)
+
+    # Override anode indices if explicitly provided
+    if args.anode_indices:
+        override_ids = [int(x) for x in re.findall(r"\d+", args.anode_indices)]
+        matches = [(p, n, f) for p, n, f in matches if n in override_ids]
+        if not matches:
+            print(f"ERROR: none of the anode indices {override_ids} found in {datadir}",
+                  file=sys.stderr)
+            sys.exit(1)
+        anode_ids = sorted(n for _, n, _ in matches)
 
     # Resolve jsonnet path
     jsonnet = args.jsonnet or _resolve_jsonnet(args.script_dir)

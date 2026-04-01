@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import random
 import sys
 
 # Ensure sources and processing steps are registered before use
@@ -45,31 +46,30 @@ def run(args) -> None:
     source_cls = SourceRegistry.get("frames")
     frame_data = source_cls().load(args.archive)
 
-    # 2. Resolve output directory: if user didn't specify --outdir, auto-name
-    #    with today's date to ensure a fresh folder each day.
+    # 2. Resolve output directory name (do NOT create it yet — defer until save).
     if args.outdir == "woodpecker_data":
         date_str = datetime.datetime.now().strftime("%Y%m%d")
-        outdir = f"woodpecker_data_{date_str}"
+        rand_str = f"{random.randint(0, 99):02d}"
+        outdir = f"woodpecker_data_{date_str}_{rand_str}"
     else:
         outdir = args.outdir
-    os.makedirs(outdir, exist_ok=True)
 
-    out_path = args.out
-    if out_path is None:
-        out_path = os.path.join(outdir,
-                                f"{args.prefix}-anode{frame_data.anode_id}.tar.bz2")
-    else:
-        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    ctx = PipelineContext(frame_data=frame_data, config={})
 
-    ctx = PipelineContext(
-        frame_data=frame_data,
-        config={"out_path": out_path},
-    )
+    # 3. Run GUI; on_save_callback creates the directory and triggers the pipeline
+    def on_save(selection, _):
+        # Create directory only now that the user confirmed a save
+        os.makedirs(outdir, exist_ok=True)
 
-    # 3. Run GUI; on_save_callback triggers the pipeline
-    def on_save(selection, _out_path):
+        out_path = args.out
+        if out_path is None:
+            out_path = os.path.join(outdir,
+                                    f"{args.prefix}-anode{frame_data.anode_id}.tar.bz2")
+        else:
+            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
         ctx.selection = selection
-        ctx.config["out_path"] = _out_path
+        ctx.config["out_path"] = out_path
         PipelineRunner(["mask_frames"]).run(ctx)
 
         sel_path = args.save_selection or os.path.join(
@@ -81,7 +81,7 @@ def run(args) -> None:
 
     gui_app.run_ui(
         frame_data,
-        out_path=out_path,
+        out_path=None,
         vmax=args.vmax,
         vmin=args.vmin,
         cmap=args.cmap,

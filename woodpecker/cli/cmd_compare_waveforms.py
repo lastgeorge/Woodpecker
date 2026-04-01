@@ -221,6 +221,80 @@ def _aligned_mean_waveform_full(
     return out
 
 
+def _aligned_mean_waveform_align2(
+    frame: np.ndarray,
+    channels: np.ndarray,
+    ch_sel: np.ndarray,
+    start_tick: int,
+    tick_start: int,
+    tick_end: int,
+    nticks: int,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    half_window: int = 200,
+) -> np.ndarray:
+    """Peak-aligned mean waveform using a user-defined track line (align2).
+
+    Mirrors the ROOT align2() function from check_waveform_withdata_2.cc.
+
+    The extraction window start per channel is the same linear interpolation
+    as _aligned_mean_waveform (tick_start → tick_end over the channel range).
+    The peak position within that window is corrected using the track slope:
+
+        maxbin = kk * (channel - x1) + y1 - start_bin
+
+    where kk = (y2 - y1) / (x2 - x1) is the track slope in tick/channel.
+    The accumulator is shifted so that maxbin lands at half_window.
+
+    Parameters
+    ----------
+    x1, y1 : channel and tick of the first track point (in frame coordinates)
+    x2, y2 : channel and tick of the second track point
+    """
+    nch = len(ch_sel)
+    out = np.zeros(2 * half_window, dtype=np.float64)
+    k  = (tick_end - tick_start) / max(nch - 1, 1)   # window-start slope
+    kk = (y2 - y1) / (x2 - x1) if x2 != x1 else 0.0  # track slope tick/ch
+    ch_to_row = {int(c): i for i, c in enumerate(channels)}
+    count = 0
+
+    for idx, ch in enumerate(ch_sel):
+        row = ch_to_row.get(int(ch))
+        if row is None:
+            continue
+        start_bin = int(round(k * idx + tick_start)) - start_tick
+        i0 = max(0, start_bin)
+        i1 = min(frame.shape[1], start_bin + nticks)
+        if i1 <= i0:
+            continue
+        wf = frame[row, i0:i1].copy()
+
+        # Predicted peak position within the extracted window
+        maxbin = int(round(kk * (int(ch) - x1) + y1)) - start_tick - start_bin
+        # Clamp to valid window range
+        maxbin = max(0, min(len(wf) - 1, maxbin))
+
+        # Shift so that maxbin lands at half_window
+        shift = half_window - maxbin
+        src_start = max(0, -shift)
+        src_end   = min(len(wf), half_window * 2 - shift)
+        dst_start = max(0, shift)
+        dst_end   = dst_start + (src_end - src_start)
+        if dst_end > 2 * half_window:
+            over = dst_end - 2 * half_window
+            src_end -= over
+            dst_end -= over
+        if src_end > src_start and dst_end > dst_start:
+            out[dst_start:dst_end] += wf[src_start:src_end]
+            count += 1
+
+    if count > 0:
+        out /= count
+    return out
+
+
 def _power_density(
     frame: np.ndarray,
     channels: np.ndarray,
@@ -387,7 +461,7 @@ PLANE_LABELS = ["U", "V", "W"]
 
 def compare_waveforms(
     data_path: str,
-    sim_path: str,
+    sim_path: Optional[str],
     selection: dict,
     data_tag: Optional[str] = None,
     sim_tag: Optional[str] = None,
@@ -412,13 +486,18 @@ def compare_waveforms(
     print(f"  tag={data_used_tag}, shape={data_frame.shape}, "
           f"start_tick={int(data_ti[0])}")
 
-    print(f"Loading sim:   {sim_path}")
-    sim_frame, sim_ch, sim_ti, sim_used_tag = _load_frames(sim_path, sim_tag)
-    print(f"  tag={sim_used_tag}, shape={sim_frame.shape}, "
-          f"start_tick={int(sim_ti[0])}")
+    has_sim = sim_path is not None
+    if has_sim:
+        print(f"Loading sim:   {sim_path}")
+        sim_frame, sim_ch, sim_ti, sim_used_tag = _load_frames(sim_path, sim_tag)
+        print(f"  tag={sim_used_tag}, shape={sim_frame.shape}, "
+              f"start_tick={int(sim_ti[0])}")
+        sim_start = int(sim_ti[0])
+    else:
+        sim_frame = sim_ch = sim_ti = sim_used_tag = sim_start = None
+        print("  (no sim — data-only mode)")
 
     data_start = int(data_ti[0])
-    sim_start  = int(sim_ti[0])
 
     is_compare = _is_compare_selection(selection)
     if is_compare:
@@ -429,16 +508,18 @@ def compare_waveforms(
     for label in PLANE_LABELS:
         if is_compare:
             data_p = _compare_plane_params(selection, "data", label)
-            sim_p  = _compare_plane_params(selection, "sim",  label)
-            if data_p is None or sim_p is None:
-                print(f"  Plane {label}: incomplete entry in selection — skipping")
+            sim_p  = _compare_plane_params(selection, "sim",  label) if has_sim else None
+            if data_p is None:
+                print(f"  Plane {label}: incomplete data entry in selection — skipping")
                 continue
+            if has_sim and sim_p is None:
+                print(f"  Plane {label}: incomplete sim entry in selection — running data-only")
         else:
             data_p = _plane_params(selection, label)
             if data_p is None:
                 print(f"  Plane {label}: no channel range in selection — skipping")
                 continue
-            sim_p = data_p  # legacy: same params used for sim (full-frame peak search)
+            sim_p = data_p if has_sim else None  # legacy: same params used for sim
 
         # ch_min may be > ch_max when slope is reversed (channels swapped in JSON).
         # Build channel array from low to high; tick_start/tick_end already encode
@@ -452,53 +533,96 @@ def compare_waveforms(
                           tick_start=data_p["tick_end"],
                           tick_end=data_p["tick_start"])
 
-        s_ch_lo = min(sim_p["ch_min"], sim_p["ch_max"])
-        s_ch_hi = max(sim_p["ch_min"], sim_p["ch_max"])
-        ch_sel_sim = np.arange(s_ch_lo, s_ch_hi + 1)
-        if sim_p["ch_min"] > sim_p["ch_max"]:
-            sim_p = dict(sim_p,
-                         tick_start=sim_p["tick_end"],
-                         tick_end=sim_p["tick_start"])
-        n_data = data_p["nticks"]
-        n_sim  = sim_p["nticks"]
+        if sim_p is not None:
+            s_ch_lo = min(sim_p["ch_min"], sim_p["ch_max"])
+            s_ch_hi = max(sim_p["ch_min"], sim_p["ch_max"])
+            ch_sel_sim = np.arange(s_ch_lo, s_ch_hi + 1)
+            if sim_p["ch_min"] > sim_p["ch_max"]:
+                sim_p = dict(sim_p,
+                             tick_start=sim_p["tick_end"],
+                             tick_end=sim_p["tick_start"])
+            n_sim = sim_p["nticks"]
+        else:
+            ch_sel_sim = None
+            n_sim = None
 
-        print(f"  Plane {label}: "
-              f"data ch {data_p['ch_min']}–{data_p['ch_max']} "
-              f"ticks {data_p['tick_start']}–{data_p['tick_end']} n={n_data} | "
-              f"sim ch {sim_p['ch_min']}–{sim_p['ch_max']} "
-              f"ticks {sim_p['tick_start']}–{sim_p['tick_end']} n={n_sim}")
+        n_data = data_p["nticks"]
+
+        if sim_p is not None:
+            print(f"  Plane {label}: "
+                  f"data ch {data_p['ch_min']}–{data_p['ch_max']} "
+                  f"ticks {data_p['tick_start']}–{data_p['tick_end']} n={n_data} | "
+                  f"sim ch {sim_p['ch_min']}–{sim_p['ch_max']} "
+                  f"ticks {sim_p['tick_start']}–{sim_p['tick_end']} n={n_sim}")
+        else:
+            print(f"  Plane {label}: "
+                  f"data ch {data_p['ch_min']}–{data_p['ch_max']} "
+                  f"ticks {data_p['tick_start']}–{data_p['tick_end']} n={n_data} | "
+                  f"sim: none")
 
         # Aligned mean waveforms
-        data_wf = _aligned_mean_waveform(
-            data_frame, data_ch, ch_sel_data, data_start,
-            data_p["tick_start"], data_p["tick_end"], n_data, half_window,
-        )
-        if is_compare:
-            # Sim has its own explicit tick range
-            sim_wf = _aligned_mean_waveform(
-                sim_frame, sim_ch, ch_sel_sim, sim_start,
-                sim_p["tick_start"], sim_p["tick_end"], n_sim, half_window,
+        # Use align2 if track_points are provided for this plane
+        data_tp = data_p.get("track_points")
+        sim_tp  = sim_p.get("track_points") if sim_p is not None else None
+
+        if data_tp and "p1" in data_tp and "p2" in data_tp:
+            x1, y1 = data_tp["p1"]
+            x2, y2 = data_tp["p2"]
+            print(f"    data plane {label}: using align2 track "
+                  f"p1=({x1},{y1}) p2=({x2},{y2})")
+            data_wf = _aligned_mean_waveform_align2(
+                data_frame, data_ch, ch_sel_data, data_start,
+                data_p["tick_start"], data_p["tick_end"], n_data,
+                x1, y1, x2, y2, half_window,
             )
         else:
-            # Legacy: sim tick axis not aligned to data — search full frame
-            sim_wf = _aligned_mean_waveform_full(
-                sim_frame, sim_ch, ch_sel_sim, n_sim, half_window,
+            data_wf = _aligned_mean_waveform(
+                data_frame, data_ch, ch_sel_data, data_start,
+                data_p["tick_start"], data_p["tick_end"], n_data, half_window,
             )
+
+        if sim_p is not None:
+            if is_compare:
+                if sim_tp and "p1" in sim_tp and "p2" in sim_tp:
+                    x1, y1 = sim_tp["p1"]
+                    x2, y2 = sim_tp["p2"]
+                    print(f"    sim plane {label}: using align2 track "
+                          f"p1=({x1},{y1}) p2=({x2},{y2})")
+                    sim_wf = _aligned_mean_waveform_align2(
+                        sim_frame, sim_ch, ch_sel_sim, sim_start,
+                        sim_p["tick_start"], sim_p["tick_end"], n_sim,
+                        x1, y1, x2, y2, half_window,
+                    )
+                else:
+                    sim_wf = _aligned_mean_waveform(
+                        sim_frame, sim_ch, ch_sel_sim, sim_start,
+                        sim_p["tick_start"], sim_p["tick_end"], n_sim, half_window,
+                    )
+            else:
+                # Legacy: sim tick axis not aligned to data — search full frame
+                sim_wf = _aligned_mean_waveform_full(
+                    sim_frame, sim_ch, ch_sel_sim, n_sim, half_window,
+                )
+        else:
+            sim_wf = None
 
         # Power density
         data_freqs, data_pd = _power_density(
             data_frame, data_ch, ch_sel_data, data_start,
             data_p["tick_start"], data_p["tick_end"], n_data,
         )
-        if is_compare:
-            sim_freqs, sim_pd = _power_density(
-                sim_frame, sim_ch, ch_sel_sim, sim_start,
-                sim_p["tick_start"], sim_p["tick_end"], n_sim,
-            )
+        if sim_p is not None:
+            if is_compare:
+                sim_freqs, sim_pd = _power_density(
+                    sim_frame, sim_ch, ch_sel_sim, sim_start,
+                    sim_p["tick_start"], sim_p["tick_end"], n_sim,
+                )
+            else:
+                sim_freqs, sim_pd = _power_density_full(
+                    sim_frame, sim_ch, ch_sel_sim, n_sim,
+                )
         else:
-            sim_freqs, sim_pd = _power_density_full(
-                sim_frame, sim_ch, ch_sel_sim, n_sim,
-            )
+            sim_freqs, sim_pd = None, None
 
         tick_axis = np.arange(2 * half_window) - half_window
 
@@ -513,7 +637,7 @@ def compare_waveforms(
 
     # Normalise simulation to data using the W-plane peak (optional)
     ratio = 1.0
-    if normalize_w and "W" in results:
+    if normalize_w and "W" in results and results["W"]["sim_wf"] is not None:
         w_data_peak = float(np.max(np.abs(results["W"]["data_wf"])))
         w_sim_peak  = float(np.max(np.abs(results["W"]["sim_wf"])))
         if w_data_peak > 0 and w_sim_peak > 0:
@@ -524,7 +648,7 @@ def compare_waveforms(
             print("  W-plane normalization disabled (--no-w-scale)")
 
     for label in results:
-        if ratio != 0:
+        if ratio != 0 and results[label]["sim_wf"] is not None:
             results[label]["sim_wf"] = results[label]["sim_wf"] / ratio
             results[label]["sim_pd"] = (
                 results[label]["sim_pd"][0],
@@ -578,8 +702,9 @@ def _plot_results(
 
         ax = axes[ax_idx]
         ax_idx += 1
-        ax.plot(tick_axis, data_wf, color="black",   label=data_label, linewidth=1.2)
-        ax.plot(tick_axis, sim_wf,  color="red",     label=sim_label,  linewidth=1.2)
+        ax.plot(tick_axis, data_wf, color="black", label=data_label, linewidth=1.2)
+        if sim_wf is not None:
+            ax.plot(tick_axis, sim_wf, color="red", label=sim_label, linewidth=1.2)
         ax.set_title(f"Plane {label} — aligned mean waveform")
         ax.set_xlabel("Tick (peak-aligned)")
         ax.set_ylabel("ADC")
@@ -591,7 +716,8 @@ def _plot_results(
             ax_idx += 1
             mask = data_freqs <= 1.0  # show up to 1 MHz
             ax2.plot(data_freqs[mask], data_pd[mask], color="black", label=data_label, linewidth=1.2)
-            ax2.plot(sim_freqs[mask],  sim_pd[mask],  color="red",   label=sim_label,  linewidth=1.2)
+            if sim_freqs is not None and sim_pd is not None:
+                ax2.plot(sim_freqs[mask], sim_pd[mask], color="red", label=sim_label, linewidth=1.2)
             ax2.set_title(f"Plane {label} — power density")
             ax2.set_xlabel("Frequency (MHz)")
             ax2.set_ylabel("|C(ω)|² (mV²)")
@@ -618,8 +744,8 @@ def add_parser(subparsers) -> None:
         help="Raw data tar.bz2 archive (e.g. protodune-sp-frames-raw-anode0.tar.bz2)",
     )
     p.add_argument(
-        "--sim", required=True, metavar="SIM_TAR",
-        help="Simulation tar.bz2 archive from 'woodpecker run-sim-check'",
+        "--sim", default=None, metavar="SIM_TAR",
+        help="Simulation tar.bz2 archive (optional; omit to plot data only)",
     )
     p.add_argument(
         "--selection", required=True, metavar="SELECTION_JSON",
@@ -657,7 +783,10 @@ def add_parser(subparsers) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
-    for path in (args.data, args.sim, args.selection):
+    check_paths = [args.data, args.selection]
+    if args.sim:
+        check_paths.append(args.sim)
+    for path in check_paths:
         if not os.path.exists(path):
             print(f"ERROR: file not found: {path}", file=sys.stderr)
             sys.exit(1)
