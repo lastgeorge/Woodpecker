@@ -134,6 +134,7 @@ def run(args: argparse.Namespace) -> None:
     frame_key = next((k for k in raw_data if k.startswith(f"frame_{tag}_")), None)
     ch_key    = next((k for k in raw_data if k.startswith(f"channels_{tag}_")), None)
     ti_key    = next((k for k in raw_data if k.startswith(f"tickinfo_{tag}_")), None)
+    bad_key   = next((k for k in raw_data if k.startswith("chanmask_bad_")), None)
 
     if frame_key is None:
         print(f"ERROR: frame_{tag}_* not found. Available: {sorted(raw_data)}",
@@ -143,6 +144,13 @@ def run(args: argparse.Namespace) -> None:
     frame    = raw_data[frame_key].astype(np.float32)
     channels = raw_data[ch_key]
     tickinfo = raw_data[ti_key] if ti_key else np.array([0, frame.shape[1], 0.5])
+
+    # Bad channel mask: shape (N, 3) → columns [channel, tick_start, tick_end]
+    bad_channels: set[int] = set()
+    if bad_key is not None:
+        bad_mask = raw_data[bad_key]
+        bad_channels = set(int(r[0]) for r in bad_mask)
+        print(f"  Bad channels ({len(bad_channels)}): {sorted(bad_channels)}")
 
     start_tick = int(tickinfo[0])
     nticks = frame.shape[1]
@@ -182,19 +190,24 @@ def run(args: argparse.Namespace) -> None:
             continue
 
         # Per-plane color scale
-        if args.zrange:
+        if "gauss" in tag:
+            # Gauss tag: fixed 0..1000, white at 0
+            vmin, vmax = 0.0, 1000.0
+            norm = None
+            cmap = "hot_r"  # white at low end (0), dark at high end
+        elif args.zrange:
             vmin, vmax = args.zrange
             norm = TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax)
             cmap = "RdBu_r"
         else:
             plane_rms = float(np.std(pframe[pframe != 0])) if np.any(pframe != 0) else global_rms
             if label == "W":
-                # Collection plane: unipolar (positive signal), use 0..30*RMS
+                # Collection plane: unipolar (positive signal), use 0..10*RMS
                 vmin, vmax = 0.0, 10 * plane_rms
-                norm = None  # linear, no diverging norm needed
-                cmap = "Blues"
+                norm = None
+                cmap = "hot_r"  # white at 0
             else:
-                # Induction planes: bipolar, use ±30*RMS
+                # Induction planes: bipolar, use ±10*RMS
                 vmin, vmax = -10 * plane_rms, 10 * plane_rms
                 norm = TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax)
                 cmap = "RdBu_r"
@@ -212,7 +225,12 @@ def run(args: argparse.Namespace) -> None:
             cmap=cmap,
             extent=[pch[0], pch[-1], ticks[0], ticks[-1]],
         )
-        ax.set_title(f"Plane {label}  (ch {pch[0]}–{pch[-1]},  {pframe.shape[0]} wires)")
+        # Overlay bad channels as vertical lines
+        plane_bad = [ch for ch in bad_channels if pch[0] <= ch <= pch[-1]]
+        for bch in plane_bad:
+            ax.axvline(x=bch, color="blue", linewidth=0.6, alpha=0.8)
+        bad_label = f"  [{len(plane_bad)} bad ch]" if plane_bad else ""
+        ax.set_title(f"Plane {label}  (ch {pch[0]}–{pch[-1]},  {pframe.shape[0]} wires){bad_label}")
         ax.set_xlabel("Channel")
         ax.set_ylabel("Tick")
         fig.colorbar(im, ax=ax, fraction=0.02, pad=0.01)

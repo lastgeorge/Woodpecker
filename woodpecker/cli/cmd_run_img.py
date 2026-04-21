@@ -35,6 +35,9 @@ import subprocess
 import sys
 
 
+# Tools bundled with woodpecker
+_TOOLS_DIR = os.path.join(os.path.dirname(__file__), "..", "tools")
+
 # Pattern: <prefix>-anode<N>.tar.bz2
 _FNAME_RE = re.compile(r"^(.+)-anode(\d+)\.tar\.bz2$")
 
@@ -79,6 +82,10 @@ def add_parser(subparsers) -> None:
     p.add_argument(
         "--dry-run", action="store_true",
         help="Print the wire-cell command but do not execute it",
+    )
+    p.add_argument(
+        "--bee", action="store_true",
+        help="After imaging, convert clusters to bee format and upload; print the URL",
     )
     p.set_defaults(func=run)
 
@@ -236,4 +243,57 @@ def run(args: argparse.Namespace) -> None:
         return
 
     result = subprocess.run(cmd, env=env)
-    sys.exit(result.returncode)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+    if not args.bee:
+        return
+
+    # ── bee conversion + upload ───────────────────────────────────────────────
+    bee_script    = os.path.abspath(os.path.join(_TOOLS_DIR, "wct-img-2-bee-combined.py"))
+    upload_script = os.path.abspath(os.path.join(_TOOLS_DIR, "upload-to-bee.sh"))
+
+    # Collect active and masked cluster tarballs produced in datadir
+    active_files = sorted(glob.glob(os.path.join(datadir, "clusters-apa-*-ms-active.tar.gz")))
+    masked_files = sorted(glob.glob(os.path.join(datadir, "clusters-apa-*-ms-masked.tar.gz")))
+
+    if not active_files and not masked_files:
+        print("WARNING: no cluster tar.gz files found in %s — skipping bee upload" % datadir,
+              file=sys.stderr)
+        return
+
+    print("\n" + "=" * 60)
+    print("bee conversion")
+    print("=" * 60)
+    print(f"  active files ({len(active_files)}): {[os.path.basename(f) for f in active_files]}")
+    print(f"  masked files ({len(masked_files)}): {[os.path.basename(f) for f in masked_files]}")
+
+    bee_cmd = [sys.executable, bee_script]
+    if active_files:
+        bee_cmd += ["--active"] + active_files
+    if masked_files:
+        bee_cmd += ["--masked"] + masked_files
+
+    print("Command:")
+    print("  " + " \\\n    ".join(bee_cmd))
+    bee_result = subprocess.run(bee_cmd, env=env, cwd=os.path.abspath(datadir))
+    if bee_result.returncode != 0:
+        print("ERROR: bee conversion failed", file=sys.stderr)
+        sys.exit(bee_result.returncode)
+
+    print("\n" + "=" * 60)
+    print("bee upload")
+    print("=" * 60)
+    upload_result = subprocess.run(
+        ["sh", upload_script, "upload.zip"],
+        env=env,
+        cwd=os.path.abspath(datadir),
+        capture_output=True,
+        text=True,
+    )
+    # upload-to-bee.sh prints the URL on stdout via echo
+    url = upload_result.stdout.strip()
+    if upload_result.returncode != 0:
+        print("ERROR: upload failed\n" + upload_result.stderr, file=sys.stderr)
+        sys.exit(upload_result.returncode)
+    print(f"\nBee URL: {url}")

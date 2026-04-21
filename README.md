@@ -24,13 +24,13 @@ python -m woodpecker <subcommand> ...
 
 ```
 protodune-sp-frames-anode<N>.tar.bz2   (WireCell FrameFileSink output)
-          │
+          │   (may contain chanmask_bad_* — overlaid by plot-frames)
           ▼
    woodpecker select             → masked anode<N>.tar.bz2  in woodpecker_data_<date>/
           │                        + selection-anode<N>.json
           ▼
    woodpecker run-img      [WCT] → imaging clusters          in woodpecker_data_<date>/
-          │
+          │      └─ --bee flag → bee conversion → upload.zip → prints bee URL
           ▼
    woodpecker run-clustering [WCT] → bee upload.zip + tracks-*.json
           │
@@ -295,17 +295,29 @@ woodpecker run-img
 woodpecker run-img --datadir woodpecker_data_20260329
 woodpecker run-img --anode-indices '[2]'
 woodpecker run-img --dry-run
+woodpecker run-img --bee          # imaging + bee conversion + upload
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--datadir` | `woodpecker_data` | Directory with masked `*-anode<N>.tar.bz2` files |
 | `--anode-indices` | auto-detect | JSON list e.g. `'[1,2]'` |
-| `--output-prefix` | `<datadir>/protodune-sp-frames-img` | Output prefix |
 | `--jsonnet` | auto-search | Path to imaging jsonnet |
 | `--wct-base` | *(required)* | WCT_BASE directory |
 | `--log-level` | `debug` | Wire-cell log level |
 | `--dry-run` | false | Print command without executing |
+| `--bee` | false | After imaging, convert clusters to bee format, upload, and print URL |
+
+With `--bee`, after `wire-cell` finishes woodpecker automatically:
+
+1. Finds `clusters-apa-*-ms-active.tar.gz` and `clusters-apa-*-ms-masked.tar.gz`
+   in `--datadir` (any subset of anodes, not required to be all 8).
+2. Runs `wirecell-img bee-blobs` via `wct-img-2-bee-combined.py` to produce
+   `data/0/0-apa<N>-active.json` and `data/0/0-apa<N>-masked.json`, then zips
+   them into `upload.zip`.
+3. Uploads `upload.zip` to bee and prints the resulting URL.
+
+Requires `wirecell-img` on `PATH` (provided by the direnv venv).
 
 ---
 
@@ -367,11 +379,21 @@ woodpecker plot-frames data.tar.bz2 --zrange -50 50
 | `--tag` | auto-detect (raw > gauss > wiener) | Frame tag to display |
 | `--out` | `<input>.png` | Output PNG path |
 | `--tick-range T0 T1` | full range | Restrict to tick indices T0..T1 |
-| `--zrange ZMIN ZMAX` | ±3 × RMS | ADC color scale range |
+| `--zrange ZMIN ZMAX` | ±10 × RMS | ADC color scale range |
 | `--dpi` | 150 | Output image DPI |
 
-Color scales: induction planes U/V use `RdBu_r` (diverging, white at zero);
-collection plane W uses `Blues` (white at zero, blue for positive signal).
+Color scales:
+
+| Condition | Color map | Range |
+|-----------|-----------|-------|
+| Tag contains `gauss` | `hot_r` (white at 0) | fixed 0 – 1000 |
+| Other tags, W plane | `hot_r` (white at 0) | 0 – 10 × RMS |
+| Other tags, U/V planes | `RdBu_r` (diverging, white at 0) | ±10 × RMS |
+
+**Bad channel overlay**: if the archive contains a `chanmask_bad_*` array
+(shape `(N, 3)`: `[channel, tick_start, tick_end]`), each bad channel is
+drawn as a thin yellow vertical line on the relevant plane.  The plane title
+shows the count: `[N bad ch]`.  Archives without this array are unaffected.
 
 ---
 
