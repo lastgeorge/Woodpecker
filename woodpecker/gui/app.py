@@ -9,7 +9,8 @@ import os
 from typing import Optional
 
 import matplotlib
-matplotlib.use("QtAgg")
+if not os.environ.get("MPLBACKEND"):
+    matplotlib.use("QtAgg")
 import matplotlib.pyplot as plt
 import numpy as np
 
