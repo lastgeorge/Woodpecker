@@ -33,12 +33,21 @@ def _load_archive_raw(path: str) -> dict:
     return data
 
 
-def _split_planes(frame: np.ndarray, channels: np.ndarray) -> List[Tuple[np.ndarray, np.ndarray]]:
-    """Split (nch, ntick) frame into [(frame_U,ch_U), (frame_V,ch_V), (frame_W,ch_W)]."""
-    diffs = np.diff(channels)
-    gap_idx = np.where(diffs > 1)[0]
-    starts = [0] + list(gap_idx + 1)
-    ends = list(gap_idx + 1) + [len(channels)]
+def _split_planes(frame: np.ndarray, channels: np.ndarray,
+                  boundaries: list | None = None) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Split (nch, ntick) frame into [(frame_U,ch_U), (frame_V,ch_V), (frame_W,ch_W)].
+
+    boundaries: channel-count offsets where new planes begin (e.g. [800, 1600] for HD).
+                None → auto-detect from gaps in channel numbering (VD).
+    """
+    if boundaries:
+        starts = [0] + boundaries
+        ends = boundaries + [len(channels)]
+    else:
+        diffs = np.diff(channels)
+        gap_idx = np.where(diffs > 1)[0]
+        starts = [0] + list(gap_idx + 1)
+        ends = list(gap_idx + 1) + [len(channels)]
     return [(frame[s:e], channels[s:e]) for s, e in zip(starts, ends)]
 
 
@@ -46,7 +55,8 @@ def _split_planes(frame: np.ndarray, channels: np.ndarray) -> List[Tuple[np.ndar
 class GaussFrameSource(DataSource):
     """Load a WireCell gauss (or wiener) frame archive."""
 
-    def load(self, path: str, filter_tag: str = "gauss", **kwargs) -> FrameData:
+    def load(self, path: str, filter_tag: str = "gauss",
+             detector: str = "vd", **kwargs) -> FrameData:
         """
         Parameters
         ----------
@@ -54,6 +64,9 @@ class GaussFrameSource(DataSource):
             Path to protodune-sp-frames-anodeN.tar.bz2
         filter_tag : str
             "gauss" or "wiener"
+        detector : str
+            "vd" (default): split planes on channel number gaps.
+            "hd": split at fixed offsets 800/1600 (800 U + 800 V + 960 W per APA).
         """
         print(f"Loading {path} ...")
         raw_data = _load_archive_raw(path)
@@ -81,7 +94,8 @@ class GaussFrameSource(DataSource):
         channels = raw_data[ch_key]
         tickinfo = raw_data[ti_key]
 
-        plane_tuples = _split_planes(frame, channels)
+        hd_boundaries = [800, 1600] if detector == "hd" else None
+        plane_tuples = _split_planes(frame, channels, hd_boundaries)
         planes = [
             PlaneData(name=label, frame=pf, channels=pc)
             for label, (pf, pc) in zip(PLANE_LABELS, plane_tuples)

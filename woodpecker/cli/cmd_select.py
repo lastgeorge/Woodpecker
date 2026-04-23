@@ -38,13 +38,21 @@ def add_parser(subparsers) -> None:
     p.add_argument("--cmap", default="Blues")
     p.add_argument("--save-selection", default=None, metavar="JSON",
                    help="Write selection to JSON (default: ./woodpecker_data/selection-anodeN.json)")
+    p.add_argument(
+        "--detector", default="vd", choices=["vd", "hd"],
+        help=(
+            "Detector type controlling U/V/W plane splitting. "
+            "'vd' (default): split on channel number gaps (ProtoDUNE-VD). "
+            "'hd': split at fixed offsets 800/1600 (ProtoDUNE-HD)."
+        ),
+    )
     p.set_defaults(func=run)
 
 
 def run(args) -> None:
     # 1. Load data
     source_cls = SourceRegistry.get("frames")
-    frame_data = source_cls().load(args.archive)
+    frame_data = source_cls().load(args.archive, detector=args.detector)
 
     # 2. Resolve output directory name (do NOT create it yet — defer until save).
     if args.outdir == "woodpecker_data":

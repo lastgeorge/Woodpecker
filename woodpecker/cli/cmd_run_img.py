@@ -254,8 +254,8 @@ def run(args: argparse.Namespace) -> None:
     upload_script = os.path.abspath(os.path.join(_TOOLS_DIR, "upload-to-bee.sh"))
 
     # Collect active and masked cluster tarballs produced in datadir
-    active_files = sorted(glob.glob(os.path.join(datadir, "clusters-apa-*-ms-active.tar.gz")))
-    masked_files = sorted(glob.glob(os.path.join(datadir, "clusters-apa-*-ms-masked.tar.gz")))
+    active_files = sorted(os.path.abspath(f) for f in glob.glob(os.path.join(datadir, "clusters-apa-*-ms-active.tar.gz")))
+    masked_files = sorted(os.path.abspath(f) for f in glob.glob(os.path.join(datadir, "clusters-apa-*-ms-masked.tar.gz")))
 
     if not active_files and not masked_files:
         print("WARNING: no cluster tar.gz files found in %s — skipping bee upload" % datadir,

@@ -80,6 +80,9 @@ woodpecker select protodune-sp-frames-anode0.tar.bz2 --vmax 1000
 woodpecker select protodune-sp-frames-anode0.tar.bz2 --out my_output.tar.bz2
 woodpecker select protodune-sp-frames-anode0.tar.bz2 --save-selection sel.json
 woodpecker select protodune-sp-frames-anode0.tar.bz2 --outdir my_dir
+
+# ProtoDUNE-HD data (local 0-based channel numbering, no gaps):
+woodpecker select protodunehd-sp-frames-anode0.tar.bz2 --detector hd
 ```
 
 Selection workflow:
@@ -374,6 +377,10 @@ woodpecker plot-frames data.tar.bz2 --tick-range 1000 3000
 woodpecker plot-frames data.tar.bz2 --zrange -50 50
 ```
 
+```bash
+woodpecker plot-frames data.tar.bz2 --detector hd   # ProtoDUNE-HD (local 0-based channels)
+```
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--tag` | auto-detect (raw > gauss > wiener) | Frame tag to display |
@@ -381,6 +388,7 @@ woodpecker plot-frames data.tar.bz2 --zrange -50 50
 | `--tick-range T0 T1` | full range | Restrict to tick indices T0..T1 |
 | `--zrange ZMIN ZMAX` | ±10 × RMS | ADC color scale range |
 | `--dpi` | 150 | Output image DPI |
+| `--detector` | `vd` | `vd`: split planes on channel gaps (ProtoDUNE-VD); `hd`: fixed split at offsets 800/1600 (ProtoDUNE-HD, 800 U + 800 V + 960 W) |
 
 Color scales:
 
@@ -400,8 +408,8 @@ shows the count: `[N bad ch]`.  Archives without this array are unaffected.
 ### `frames-to-root` — convert tar.bz2 frame archive to ROOT TH2D histograms
 
 Reads a WireCell `FrameFileSink` tar.bz2 archive and writes a ROOT file
-containing one `TH2D` per tag per wire plane.  Planes are auto-detected from
-channel-number gaps in the channel array.
+containing one `TH2D` per tag per wire plane.  Planes are split by channel-number
+gaps (VD) or fixed offsets (HD).
 
 ```bash
 # Convert all tags (raw, gauss, …) found in the archive:
@@ -415,6 +423,9 @@ woodpecker frames-to-root data.tar.bz2 --tag raw --tag gauss
 
 # Specify output path:
 woodpecker frames-to-root data.tar.bz2 --out frames.root
+
+# ProtoDUNE-HD data:
+woodpecker frames-to-root data.tar.bz2 --detector hd
 ```
 
 | Option | Default | Description |
@@ -422,6 +433,7 @@ woodpecker frames-to-root data.tar.bz2 --out frames.root
 | `frame_file` | required | Path to `*-anode<N>.tar.bz2` |
 | `--tag TAG` | all tags found | Frame tag(s) to convert; may be repeated |
 | `--out` | `<frame_file>.root` (same directory) | Output ROOT file path |
+| `--detector` | `vd` | `vd`: split planes on channel gaps (ProtoDUNE-VD); `hd`: fixed split at offsets 800/1600 (ProtoDUNE-HD) |
 
 #### Output histogram naming
 

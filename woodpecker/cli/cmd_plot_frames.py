@@ -50,6 +50,15 @@ def add_parser(subparsers) -> None:
         "--dpi", type=int, default=150,
         help="Output image DPI (default: 150)",
     )
+    p.add_argument(
+        "--detector", default="vd", choices=["vd", "hd"],
+        help=(
+            "Detector type controlling U/V/W plane splitting. "
+            "'vd' (default): split on channel number gaps (ProtoDUNE-VD global numbering). "
+            "'hd': split at fixed offsets 800/1600 within local 0-based channel numbering "
+            "(ProtoDUNE-HD, 800 U + 800 V + 960 W per APA)."
+        ),
+    )
     p.set_defaults(func=run)
 
 
@@ -94,12 +103,22 @@ def _find_tag(raw_data: dict, requested_tag: str | None, anode_id: int) -> str:
     return available[0]
 
 
-def _split_planes(frame: np.ndarray, channels: np.ndarray):
-    """Split (nch, ntick) into [(frame_U,ch_U), (frame_V,ch_V), (frame_W,ch_W)]."""
-    diffs = np.diff(channels)
-    gap_idx = list(np.where(diffs > 1)[0])
-    starts = [0] + [i + 1 for i in gap_idx]
-    ends = [i + 1 for i in gap_idx] + [len(channels)]
+def _split_planes(frame: np.ndarray, channels: np.ndarray,
+                  boundaries: list[int] | None = None):
+    """Split (nch, ntick) into [(frame_U,ch_U), (frame_V,ch_V), (frame_W,ch_W)].
+
+    boundaries: sorted list of channel-index offsets where new planes begin
+                (e.g. [800, 1600] for HD).  None → auto-detect from gaps.
+    """
+    if boundaries:
+        # boundaries are channel-count offsets into the sorted channel array
+        starts = [0] + boundaries
+        ends = boundaries + [len(channels)]
+    else:
+        diffs = np.diff(channels)
+        gap_idx = list(np.where(diffs > 1)[0])
+        starts = [0] + [i + 1 for i in gap_idx]
+        ends = [i + 1 for i in gap_idx] + [len(channels)]
     return [(frame[s:e], channels[s:e]) for s, e in zip(starts, ends)]
 
 
@@ -166,7 +185,8 @@ def run(args: argparse.Namespace) -> None:
         frame = frame[:, i0:i1]
         ticks = ticks[i0:i1]
 
-    planes = _split_planes(frame, channels)
+    hd_boundaries = [800, 1600] if args.detector == "hd" else None
+    planes = _split_planes(frame, channels, hd_boundaries)
     plane_labels = ["U", "V", "W"]
     # pad to 3 if fewer splits
     while len(planes) < 3:

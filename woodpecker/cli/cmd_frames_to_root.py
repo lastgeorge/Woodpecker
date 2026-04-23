@@ -39,6 +39,14 @@ def add_parser(subparsers) -> None:
         "--out", default=None,
         help="Output ROOT file path (default: <frame_file>.root)",
     )
+    p.add_argument(
+        "--detector", default="vd", choices=["vd", "hd"],
+        help=(
+            "Detector type controlling U/V/W plane splitting. "
+            "'vd' (default): split on channel number gaps (ProtoDUNE-VD). "
+            "'hd': split at fixed offsets 800/1600 (ProtoDUNE-HD)."
+        ),
+    )
     p.set_defaults(func=run)
 
 
@@ -66,12 +74,21 @@ def _find_all_tags(raw_data: dict) -> list:
     return seen
 
 
-def _split_planes(frame: np.ndarray, channels: np.ndarray):
-    """Split (nch, ntick) into [(frame_slice, ch_slice), ...]."""
-    diffs = np.diff(channels)
-    gap_idx = list(np.where(diffs > 1)[0])
-    starts = [0] + [i + 1 for i in gap_idx]
-    ends = [i + 1 for i in gap_idx] + [len(channels)]
+def _split_planes(frame: np.ndarray, channels: np.ndarray,
+                  boundaries: list | None = None):
+    """Split (nch, ntick) into [(frame_slice, ch_slice), ...].
+
+    boundaries: channel-count offsets where new planes begin (e.g. [800, 1600] for HD).
+                None → auto-detect from gaps (VD).
+    """
+    if boundaries:
+        starts = [0] + boundaries
+        ends = boundaries + [len(channels)]
+    else:
+        diffs = np.diff(channels)
+        gap_idx = list(np.where(diffs > 1)[0])
+        starts = [0] + [i + 1 for i in gap_idx]
+        ends = [i + 1 for i in gap_idx] + [len(channels)]
     return [(frame[s:e], channels[s:e]) for s, e in zip(starts, ends)]
 
 
@@ -148,7 +165,8 @@ def run(args: argparse.Namespace) -> None:
         print(f"  Tag '{tag}': {len(channels)} total channels, "
               f"ticks {start_tick}–{end_tick} ({nticks} ticks)")
 
-        planes = _split_planes(frame, channels)
+        hd_boundaries = [800, 1600] if args.detector == "hd" else None
+        planes = _split_planes(frame, channels, hd_boundaries)
         # pad to 3 if fewer splits found
         while len(planes) < 3:
             planes.append((np.zeros((1, nticks)), np.array([0])))
