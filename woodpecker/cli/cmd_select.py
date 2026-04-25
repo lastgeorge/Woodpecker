@@ -39,11 +39,12 @@ def add_parser(subparsers) -> None:
     p.add_argument("--save-selection", default=None, metavar="JSON",
                    help="Write selection to JSON (default: ./woodpecker_data/selection-anodeN.json)")
     p.add_argument(
-        "--detector", default="vd", choices=["vd", "hd"],
+        "--detector", default="vd", choices=["vd", "hd", "sbnd"],
         help=(
             "Detector type controlling U/V/W plane splitting. "
             "'vd' (default): split on channel number gaps (ProtoDUNE-VD). "
-            "'hd': split at fixed offsets 800/1600 (ProtoDUNE-HD)."
+            "'hd': split at fixed offsets 800/1600 (ProtoDUNE-HD). "
+            "'sbnd': split at fixed offsets 1984/3968 (SBND)."
         ),
     )
     p.set_defaults(func=run)

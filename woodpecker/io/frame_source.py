@@ -67,6 +67,7 @@ class GaussFrameSource(DataSource):
         detector : str
             "vd" (default): split planes on channel number gaps.
             "hd": split at fixed offsets 800/1600 (800 U + 800 V + 960 W per APA).
+            "sbnd": split at fixed offsets 1984/3968 (1984 U + 1984 V + 1670 W per anode).
         """
         print(f"Loading {path} ...")
         raw_data = _load_archive_raw(path)
@@ -94,8 +95,13 @@ class GaussFrameSource(DataSource):
         channels = raw_data[ch_key]
         tickinfo = raw_data[ti_key]
 
-        hd_boundaries = [800, 1600] if detector == "hd" else None
-        plane_tuples = _split_planes(frame, channels, hd_boundaries)
+        if detector == "hd":
+            boundaries = [800, 1600]
+        elif detector == "sbnd":
+            boundaries = [1984, 3968]
+        else:
+            boundaries = None
+        plane_tuples = _split_planes(frame, channels, boundaries)
         planes = [
             PlaneData(name=label, frame=pf, channels=pc)
             for label, (pf, pc) in zip(PLANE_LABELS, plane_tuples)
